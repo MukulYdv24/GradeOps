@@ -1,0 +1,132 @@
+{
+  "exam_name": "CS101 Midterm – Spring 2025",
+  "total_points": 50,
+  "questions": [
+    {
+      "question_id": "Q1",
+      "question_text": "Explain the difference between a stack and a queue. Give one real-world example of each.",
+      "max_points": 10,
+      "criteria": [
+        {
+          "criterion_id": "Q1_C1",
+          "description": "Correct definition of a stack (LIFO - Last In First Out)",
+          "max_points": 3,
+          "keywords": ["LIFO", "last in first out", "stack", "push", "pop"],
+          "partial_credit_allowed": true
+        },
+        {
+          "criterion_id": "Q1_C2",
+          "description": "Correct definition of a queue (FIFO - First In First Out)",
+          "max_points": 3,
+          "keywords": ["FIFO", "first in first out", "queue", "enqueue", "dequeue"],
+          "partial_credit_allowed": true
+        },
+        {
+          "criterion_id": "Q1_C3",
+          "description": "Valid real-world example for stack (e.g., undo in text editor, call stack)",
+          "max_points": 2,
+          "keywords": ["undo", "browser back", "call stack", "plates", "books"],
+          "partial_credit_allowed": true
+        },
+        {
+          "criterion_id": "Q1_C4",
+          "description": "Valid real-world example for queue (e.g., print queue, ticket line)",
+          "max_points": 2,
+          "keywords": ["print queue", "ticket", "line", "waiting", "customer service"],
+          "partial_credit_allowed": true
+        }
+      ]
+    },
+    {
+      "question_id": "Q2",
+      "question_text": "What is the time complexity of binary search? Explain why.",
+      "max_points": 10,
+      "criteria": [
+        {
+          "criterion_id": "Q2_C1",
+          "description": "States O(log n) correctly",
+          "max_points": 5,
+          "keywords": ["O(log n)", "log n", "logarithmic"],
+          "partial_credit_allowed": false
+        },
+        {
+          "criterion_id": "Q2_C2",
+          "description": "Explains halving of search space each step",
+          "max_points": 5,
+          "keywords": ["half", "divide", "middle", "sorted", "binary"],
+          "partial_credit_allowed": true
+        }
+      ]
+    },
+    {
+      "question_id": "Q3",
+      "question_text": "Write pseudocode for bubble sort and state its worst-case time complexity.",
+      "max_points": 15,
+      "criteria": [
+        {
+          "criterion_id": "Q3_C1",
+          "description": "Pseudocode has outer loop iterating n times",
+          "max_points": 4,
+          "keywords": ["for", "while", "loop", "n", "outer"],
+          "partial_credit_allowed": true
+        },
+        {
+          "criterion_id": "Q3_C2",
+          "description": "Inner loop compares adjacent elements",
+          "max_points": 4,
+          "keywords": ["adjacent", "compare", "inner loop", "swap", "if"],
+          "partial_credit_allowed": true
+        },
+        {
+          "criterion_id": "Q3_C3",
+          "description": "Swap operation is correct",
+          "max_points": 3,
+          "keywords": ["swap", "temp", "exchange"],
+          "partial_credit_allowed": true
+        },
+        {
+          "criterion_id": "Q3_C4",
+          "description": "Correctly states O(n²) worst-case complexity",
+          "max_points": 4,
+          "keywords": ["O(n^2)", "O(n²)", "n squared", "quadratic"],
+          "partial_credit_allowed": false
+        }
+      ]
+    },
+    {
+      "question_id": "Q4",
+      "question_text": "Define recursion. Write a recursive function to compute factorial(n).",
+      "max_points": 15,
+      "criteria": [
+        {
+          "criterion_id": "Q4_C1",
+          "description": "Correct definition of recursion (function calling itself, base case)",
+          "max_points": 4,
+          "keywords": ["calls itself", "base case", "recursive case", "self-referential"],
+          "partial_credit_allowed": true
+        },
+        {
+          "criterion_id": "Q4_C2",
+          "description": "Correct base case: factorial(0) = 1 or factorial(1) = 1",
+          "max_points": 4,
+          "keywords": ["base case", "0", "1", "return 1"],
+          "partial_credit_allowed": false
+        },
+        {
+          "criterion_id": "Q4_C3",
+          "description": "Correct recursive step: n * factorial(n-1)",
+          "max_points": 4,
+          "keywords": ["n-1", "n * factorial", "recursive", "return n"],
+          "partial_credit_allowed": true
+        },
+        {
+          "criterion_id": "Q4_C4",
+          "description": "Code is syntactically valid and logically correct",
+          "max_points": 3,
+          "keywords": ["def", "function", "return", "factorial"],
+          "partial_credit_allowed": true
+        }
+      ]
+    }
+  ]
+}
