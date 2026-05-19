@@ -297,7 +297,3 @@ DATABASE_URL=sqlite:///./gradeops.db
 - **Rubric keywords** — grading quality improves significantly with more specific keywords per criterion
 
 ---
-
-## License
-
-MIT License — see [LICENSE](LICENSE) for details.
