@@ -23,7 +23,7 @@ import re
 from typing import TypedDict, Annotated
 from datetime import datetime
 
-from langchain_openai import ChatOpenAI
+from langchain_ollama import ChatOllama
 from langchain.schema import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
 from loguru import logger
@@ -63,14 +63,12 @@ class GradingState(TypedDict):
 # LLM client (shared across nodes)
 # ─────────────────────────────────────────────────────────────────
 
-def _get_llm() -> ChatOpenAI:
-    return ChatOpenAI(
-        model=settings.grading_llm_model,
+def _get_llm() -> ChatOllama:
+    return ChatOllama(
+        model=settings.ollama_model,
+        base_url=settings.ollama_base_url,
         temperature=settings.grading_temperature,
-        max_tokens=settings.grading_max_tokens,
-        openai_api_key=settings.openai_api_key,
     )
-
 
 # ─────────────────────────────────────────────────────────────────
 # Node 1 – Parse rubric into a grading prompt
@@ -93,7 +91,7 @@ def parse_rubric_node(state: GradingState) -> GradingState:
 # ─────────────────────────────────────────────────────────────────
 
 _CRITERION_SYSTEM = """You are a strict but fair university exam grader.
-You will receive a rubric and a student's handwritten answer (transcribed).
+You will receive a rubric and a student's handwritten answer (transcribed verbatim by OCR).
 For EACH criterion in the rubric, output a JSON array (and NOTHING else).
 
 Each element must have:
@@ -105,6 +103,14 @@ Rules:
 - Be consistent and objective.
 - Only award partial credit when the rubric explicitly allows it.
 - If the answer is blank or clearly illegible, award 0.
+- SPELLING ACCURACY: Evaluate the LITERAL text provided by the OCR — do NOT
+  mentally correct spelling errors. If a rubric criterion requires a specific
+  keyword (e.g. "mitochondria") and the student wrote a misspelling
+  (e.g. "mitochodra"), treat this as an approximate match:
+    * If partial_credit_allowed is true: award 50% of the criterion's max points.
+    * If partial_credit_allowed is false: award 0 — the keyword must be exact.
+  A correct spelling always earns full credit; a significant misspelling never
+  earns full credit even if the meaning is clear.
 - Do NOT add markdown fences. Output raw JSON array only.
 """
 

@@ -154,10 +154,28 @@ def crop_answer_regions(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     results = []
+    img_h, img_w = img.shape[:2]
+
     for region in regions:
         q_id = region["question_id"]
         x, y, w, h = region["bbox"]
+
+        # Clamp bbox to actual image dimensions — if the preview the user drew
+        # on has different dimensions, coordinates can fall outside the page.
+        x = max(0, min(int(x), img_w - 1))
+        y = max(0, min(int(y), img_h - 1))
+        w = max(1, min(int(w), img_w - x))
+        h = max(1, min(int(h), img_h - y))
+
         crop = img[y: y + h, x: x + w]
+
+        if crop.size == 0:
+            logger.warning(
+                f"  Empty crop for {q_id} (student={student_id}) — "
+                f"bbox [{x},{y},{w},{h}] produced no pixels in "
+                f"{img_w}×{img_h} image. Skipping region."
+            )
+            continue
         crop_path = output_dir / f"{student_id}_{q_id}.png"
         cv2.imwrite(str(crop_path), crop)
 

@@ -46,7 +46,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -187,6 +187,28 @@ async def upload_exam(
     db.add(db_exam)
     db.commit()
 
+    # ── Pre-generate 300 DPI page images ──────────────────────────
+    # This is the critical step that makes GradePage work correctly.
+    # Page images must exist BEFORE the user draws bounding boxes, so
+    # the preview shown in GradePage is the same 300 DPI image that the
+    # pipeline crops. Drawing boxes on any other image (e.g. a screenshot)
+    # causes a coordinate mismatch: a 492×702 screenshot vs a 2480×3508
+    # page image = 5× scale error, landing every crop in the wrong place.
+    from ocr.preprocessor import pdf_to_images as _pdf_to_images
+    for s_id, pdf_p in zip(detected_students, saved_pdfs):
+        try:
+            page_dir = (
+                Path(settings.local_storage_path) / "pages" / exam_id / s_id
+            )
+            _pdf_to_images(str(pdf_p), output_dir=page_dir)
+            logger.info(f"Page images generated for student {s_id}")
+        except Exception as exc:
+            logger.warning(
+                f"Could not pre-generate pages for {s_id}: {exc} "
+                f"— pipeline will generate them at grading time instead"
+            )
+    # ──────────────────────────────────────────────────────────────
+
     logger.info(
         f"Exam uploaded: id={exam_id} students={len(detected_students)}"
     )
@@ -206,7 +228,6 @@ async def upload_exam(
 @app.post("/api/grade", response_model=GradeJobResponse, tags=["Grading"])
 async def trigger_grading(
     req: GradeJobRequest,
-    answer_regions: list[dict],         # [{"question_id": "Q1", "bbox": [x,y,w,h]}]
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
@@ -239,23 +260,87 @@ async def trigger_grading(
     _jobs[job_id] = {"status": "running", "exam_id": req.exam_id}
 
     async def _run():
+        # Bug 2 fix: create a fresh DB session — the request session closes
+        # before this background task runs, so we must not reuse it.
+        from utils.database import SessionLocal
+        bg_db = SessionLocal()
         try:
             results = await run_full_pipeline(
                 exam_id=req.exam_id,
                 pdf_paths=[str(p) for p in pdf_paths],
                 student_ids=student_ids,
                 rubric_dict=rubric_dict,
-                answer_regions=answer_regions,
+                answer_regions=req.answer_regions,
             )
             _jobs[job_id]["status"] = "done"
             _jobs[job_id]["results"] = results
+
             # Update exam status in DB
-            exam.status = "done"
-            db.commit()
+            bg_exam = bg_db.query(DBExam).filter(DBExam.id == req.exam_id).first()
+            if bg_exam:
+                bg_exam.status = "done"
+
+            # Pipeline returns:
+            #   {
+            #     "exam_grades":        [ExamGrade.model_dump(), ...]
+            #     "extracted_answers":  [ExtractedAnswer.model_dump(), ...]  ← added to pipeline
+            #     "plagiarism_flags":   [PlagiarismFlag.model_dump(), ...]
+            #     "summary":            {...}
+            #   }
+            #
+            # Each ExamGrade has a "question_grades" list of QuestionGrade dicts.
+            # raw_text and image_path live on ExtractedAnswer, so we build a
+            # (student_id, question_id) lookup to join them in.
+
+            extracted_lookup = {
+                (a["student_id"], a["question_id"]): a
+                for a in results.get("extracted_answers", [])
+            }
+
+            for exam_grade in results.get("exam_grades", []):
+                student_id = exam_grade.get("student_id", "Unknown")
+                for qg in exam_grade.get("question_grades", []):
+                    question_id = qg.get("question_id", "Unknown")
+                    extracted = extracted_lookup.get((student_id, question_id), {})
+                    criterion_scores = qg.get("criterion_scores", [])
+
+                    db_ans = DBAnswer(
+                        id=str(uuid.uuid4()),
+                        exam_id=req.exam_id,
+                        student_id=student_id,
+                        question_id=question_id,
+                        raw_text=extracted.get("raw_text", ""),
+                        image_path=extracted.get("image_path", ""),
+                        total_awarded=qg.get("total_awarded", 0.0),
+                        total_max=qg.get("total_max", 0.0),
+                        justification=qg.get("overall_justification", ""),
+                        criterion_json=json.dumps(criterion_scores),
+                        status="graded",
+                    )
+                    bg_db.add(db_ans)
+
+            # Persist plagiarism flags
+            for flag in results.get("plagiarism_flags", []):
+                db_flag = DBPlagiarismFlag(
+                    id=str(uuid.uuid4()),
+                    exam_id=req.exam_id,
+                    student_a=flag.get("student_a", ""),
+                    student_b=flag.get("student_b", ""),
+                    question_id=flag.get("question_id", ""),
+                    similarity_score=flag.get("similarity_score", 0.0),
+                    level=flag.get("level", "none"),
+                    snippet_a=flag.get("snippet_a", ""),
+                    snippet_b=flag.get("snippet_b", ""),
+                )
+                bg_db.add(db_flag)
+
+            bg_db.commit()
         except Exception as e:
             _jobs[job_id]["status"] = "failed"
             _jobs[job_id]["error"] = str(e)
             logger.error(f"Pipeline job {job_id} failed: {e}")
+        finally:
+            bg_db.close()  # Always release the background session
 
     background_tasks.add_task(_run)
 
@@ -293,17 +378,54 @@ async def get_exam_results(exam_id: str, db: Session = Depends(get_db)):
     if not answers:
         raise HTTPException(status_code=404, detail="No results found for exam")
 
+    def _image_url(raw_path: str) -> str | None:
+        """
+        Convert an absolute/relative crop path to a /files/ URL.
+        crop_path is stored as e.g. './uploads/crops/...' but the static
+        mount already points /files/ → ./uploads/, so we must strip the
+        storage root prefix before appending to the base URL.
+        """
+        if not raw_path:
+            return None
+        norm = raw_path.replace("\\", "/")
+        storage = settings.local_storage_path.replace("\\", "/").rstrip("/")
+        # Strip leading './' so comparisons are consistent
+        if norm.startswith("./"):
+            norm = norm[2:]
+        if storage.startswith("./"):
+            storage = storage[2:]
+        if norm.startswith(storage + "/"):
+            norm = norm[len(storage) + 1:]
+        return f"http://localhost:8000/files/{norm}"
+
+    def to_criteria_obj(criterion_json):
+        if not criterion_json:
+            return {}
+        try:
+            arr = json.loads(criterion_json)
+            return {
+                s["criterion_id"]: {
+                    "earned": s["points_awarded"],
+                    "max": s["max_points"],
+                    "justification": s.get("justification", ""),
+                }
+                for s in arr
+            }
+        except Exception:
+            return {}
+
     return [
         {
+            "id": a.id,
             "answer_id": a.id,
             "student_id": a.student_id,
             "question_id": a.question_id,
             "raw_text": a.raw_text,
-            "image_url": f"/files/crops/{exam_id}/{a.student_id}/{a.student_id}_{a.question_id}.png",
-            "total_awarded": a.ta_override_points if a.ta_override_points is not None else a.total_awarded,
-            "total_max": a.total_max,
+            "image_url": _image_url(a.image_path),
+            "ai_score": a.ta_override_points if a.ta_override_points is not None else a.total_awarded,
+            "max_points": a.total_max,
             "justification": a.justification,
-            "criterion_scores": json.loads(a.criterion_json) if a.criterion_json else [],
+            "criteria_scores": to_criteria_obj(a.criterion_json),
             "status": a.status,
             "ta_comment": a.ta_comment,
         }
@@ -311,7 +433,39 @@ async def get_exam_results(exam_id: str, db: Session = Depends(get_db)):
     ]
 
 
-@app.get("/api/results/{exam_id}/student/{student_id}", tags=["Results"])
+@app.get("/api/exams/{exam_id}/students", tags=["Exams"])
+async def get_exam_students(exam_id: str, db: Session = Depends(get_db)):
+    """
+    Return the student IDs and their first-page image URLs for an exam.
+    GradePage uses this to auto-populate the bounding-box preview image.
+    """
+    exam = db.query(DBExam).filter(DBExam.id == exam_id).first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+
+    pdf_dir = Path(settings.local_storage_path) / "pdfs" / exam_id
+    student_ids = [p.stem.replace("_exam", "") for p in sorted(pdf_dir.glob("*_exam.pdf"))]
+
+    students = []
+    for s_id in student_ids:
+        page_dir = Path(settings.local_storage_path) / "pages" / exam_id / s_id
+        first_page = next(page_dir.glob("page_001.png"), None)
+        # Build URL relative to the /files/ static mount
+        page_url = None
+        if first_page:
+            storage = settings.local_storage_path.replace("\\", "/").rstrip("/").lstrip("./")
+            rel = str(first_page).replace("\\", "/")
+            if rel.startswith("./"):
+                rel = rel[2:]
+            if rel.startswith(storage + "/"):
+                rel = rel[len(storage) + 1:]
+            page_url = f"http://localhost:8000/files/{rel}"
+        students.append({"student_id": s_id, "first_page_url": page_url})
+
+    return {"exam_id": exam_id, "students": students}
+
+
+
 async def get_student_results(exam_id: str, student_id: str, db: Session = Depends(get_db)):
     """Return grades for a single student across all questions."""
     answers = (

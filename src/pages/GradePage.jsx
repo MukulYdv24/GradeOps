@@ -199,6 +199,26 @@ export default function GradePage() {
 
     const removeBox = (i) => setBoxes((prev) => prev.filter((_, idx) => idx !== i));
 
+    const handleLoadExam = async (id) => {
+        if (!id) return;
+        try {
+            // Fetch the student list so we can auto-set the preview image.
+            // The preview must point to the actual 300 DPI page image —
+            // bounding boxes are scaled to naturalWidth/Height, so using
+            // any other image causes coordinates to land in the wrong place.
+            const res = await api.get(`/api/exams/${id}/students`);
+            const first = res.data.students?.[0];
+            if (first?.first_page_url) {
+                setPreviewUrl(first.first_page_url);
+            }
+        } catch {
+            // Non-fatal — user can still type a URL manually
+        }
+    };
+
+    // Auto-load student page image when examId is available
+    useEffect(() => { if (storedExamId) handleLoadExam(storedExamId); }, []);
+
     const handleStartGrading = async () => {
         if (!examId || !rubricId || boxes.length === 0) {
             setError('Exam ID, Rubric ID, and at least one bounding box are required.');
@@ -207,6 +227,8 @@ export default function GradePage() {
         setLoading(true);
         setError('');
         try {
+            // Bug 1 fix: body must be flat — FastAPI maps it directly to
+            // GradeJobRequest, so no nested "req" wrapper.
             const res = await api.post('/api/grade', {
                 exam_id: examId,
                 rubric_id: rubricId,
@@ -214,7 +236,13 @@ export default function GradePage() {
             });
             setJobId(res.data.job_id || res.data.id);
         } catch (err) {
-            setError(err.response?.data?.detail || err.message || 'Failed to start grading job');
+            // Bug 2 fix: Pydantic v2 returns detail as an array of objects on 422,
+            // not a string. Rendering it directly as JSX crashes React.
+            const detail = err.response?.data?.detail;
+            const msg = Array.isArray(detail)
+                ? detail.map((d) => d.msg || JSON.stringify(d)).join('; ')
+                : (typeof detail === 'string' ? detail : err.message || 'Failed to start grading job');
+            setError(msg);
         } finally {
             setLoading(false);
         }
@@ -257,10 +285,11 @@ export default function GradePage() {
                             <div>
                                 <label className="label">Exam ID</label>
                                 <input className="input font-mono text-xs" value={examId} placeholder="exam_abc123"
-                                    onChange={(e) => setExamId(e.target.value)} />
+                                    onChange={(e) => setExamId(e.target.value)}
+                                    onBlur={(e) => handleLoadExam(e.target.value)} />
                             </div>
                             <div>
-                                <label className="label">Preview Image URL</label>
+                                <label className="label">Preview Image URL <span style={{fontWeight:400, color:'#5a5a7a'}}>(auto-filled from exam)</span></label>
                                 <input className="input font-mono text-xs" value={previewUrl} placeholder="http://...page1.jpg"
                                     onChange={(e) => setPreviewUrl(e.target.value)} />
                             </div>

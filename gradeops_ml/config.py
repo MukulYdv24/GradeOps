@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     plagiarism_similarity_threshold: float = 0.88
     embedding_model: str = "all-MiniLM-L6-v2"
 
+    # Ollama (free local LLM)
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3.1"
+    grading_temperature: float = 0.1
+
     @property
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.allowed_origins.split(",")]

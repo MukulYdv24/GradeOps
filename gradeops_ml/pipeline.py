@@ -76,12 +76,31 @@ async def run_full_pipeline(
     all_extracted = []     # flat list of ExtractedAnswer
     all_exam_grades = []   # list of ExamGrade
 
+    for region in answer_regions:
+        if "bbox" in region:
+            region["bbox"] = [int(coord) for coord in region["bbox"]]
+
     # ── Stage 1 & 2: OCR per student ──────────────────────────────
     for idx, (s_id, pdf_path) in enumerate(zip(student_ids, pdf_paths)):
         progress(f"OCR: {s_id}", idx + 1, total_students)
         try:
             page_dir = Path(settings.local_storage_path) / "pages" / exam_id / s_id
-            page_images = pdf_to_images(pdf_path, output_dir=page_dir)
+
+            # Reuse page images generated during upload (same 300 DPI, same
+            # pixel dimensions the user drew bounding boxes on). Only
+            # regenerate if they're missing (e.g. legacy runs).
+            existing_pages = sorted(page_dir.glob("page_*.png"))
+            if existing_pages:
+                page_images = existing_pages
+                logger.info(
+                    f"Reusing {len(page_images)} pre-generated page images for {s_id}"
+                )
+            else:
+                page_images = pdf_to_images(pdf_path, output_dir=page_dir)
+                logger.warning(
+                    f"Page images missing for {s_id} — regenerated at 300 DPI. "
+                    f"Ensure upload triggers page generation so bbox coordinates match."
+                )
 
             # Use first page only in simple mode
             # (extend to multi-page with page-to-question mapping as needed)
@@ -176,5 +195,8 @@ async def run_full_pipeline(
     return {
         "exam_grades": [eg.model_dump(mode="json") for eg in all_exam_grades],
         "plagiarism_flags": [f.model_dump(mode="json") for f in plag_flags],
+        # Included so main.py can join raw_text and image_path onto each
+        # DBAnswer row — these fields live on ExtractedAnswer, not QuestionGrade.
+        "extracted_answers": [a.model_dump() for a in all_extracted],
         "summary": summary,
     }

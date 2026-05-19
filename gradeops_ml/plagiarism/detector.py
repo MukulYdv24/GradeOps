@@ -43,6 +43,55 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / denom)
 
 
+def _char_similarity(a: str, b: str) -> float:
+    """
+    Normalised character-level similarity using Levenshtein distance.
+    Returns 1.0 for identical strings, lower for more edits needed.
+
+    This prevents short answers that are merely misspellings of each other
+    (e.g. "mitochondria" vs "mitochodra") from being flagged as HIGH
+    plagiarism purely on semantic grounds. Two students who independently
+    misspell the same word differently are not plagiarising each other.
+    """
+    a, b = a.strip().lower(), b.strip().lower()
+    if a == b:
+        return 1.0
+    la, lb = len(a), len(b)
+    if la == 0 and lb == 0:
+        return 1.0
+    if la == 0 or lb == 0:
+        return 0.0
+    # Levenshtein via DP
+    prev = list(range(lb + 1))
+    for i, ca in enumerate(a, 1):
+        curr = [i]
+        for j, cb in enumerate(b, 1):
+            curr.append(min(
+                prev[j] + 1,          # deletion
+                curr[j - 1] + 1,      # insertion
+                prev[j - 1] + (ca != cb),  # substitution
+            ))
+        prev = curr
+    edit_dist = prev[lb]
+    return 1.0 - edit_dist / max(la, lb)
+
+
+def _combined_similarity(semantic: float, text_a: str, text_b: str) -> float:
+    """
+    Combine semantic and character-level similarity.
+
+    For short answers (< 50 chars) character similarity is weighted heavily —
+    a typo should not manufacture a HIGH plagiarism flag. For longer answers
+    semantic similarity dominates because paraphrasing matters more.
+    """
+    char_sim = _char_similarity(text_a, text_b)
+    avg_len = (len(text_a.strip()) + len(text_b.strip())) / 2
+    # Weight character similarity more for short answers
+    char_weight = max(0.4, 1.0 - avg_len / 200)
+    sem_weight = 1.0 - char_weight
+    return round(sem_weight * semantic + char_weight * char_sim, 4)
+
+
 def _level_from_score(score: float) -> PlagiarismLevel:
     """Map similarity score to a PlagiarismLevel enum."""
     if score >= 0.96:
@@ -113,19 +162,18 @@ def detect_plagiarism(
 
     # O(n²) pairwise comparison — acceptable for typical exam sizes (< 200 students)
     for i, j in itertools.combinations(range(n), 2):
-        sim = float(np.dot(embeddings[i], embeddings[j]))  # already normalised
+        semantic_sim = float(np.dot(embeddings[i], embeddings[j]))  # already normalised
+        sim = _combined_similarity(semantic_sim, texts[i], texts[j])
         level = _level_from_score(sim)
 
         if level == PlagiarismLevel.NONE:
             continue
 
-        a_i = valid[i]
-        a_j = valid[j]
         flag = PlagiarismFlag(
             student_a=a_i.student_id,
             student_b=a_j.student_id,
             question_id=a_i.question_id,
-            similarity_score=round(sim, 4),
+            similarity_score=sim,
             level=level,
             snippet_a=_short_snippet(a_i.raw_text),
             snippet_b=_short_snippet(a_j.raw_text),
@@ -135,7 +183,7 @@ def detect_plagiarism(
             f"  ⚠ Plagiarism [{level.value.upper()}] "
             f"Q={a_i.question_id} — "
             f"{a_i.student_id} vs {a_j.student_id} "
-            f"(sim={sim:.3f})"
+            f"(combined={sim:.3f}, semantic={semantic_sim:.3f})"
         )
 
     # Sort highest similarity first

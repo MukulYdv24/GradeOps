@@ -126,6 +126,9 @@ class PlagiarismFlag(BaseModel):
 class GradeJobRequest(BaseModel):
     exam_id: str
     rubric_id: str
+    # Bug 3 fix: was a broken separate FastAPI param; moved here so the
+    # body parses correctly. Each dict: {"question_id": "Q1", "bbox": [x,y,w,h]}
+    answer_regions: list[dict] = []
 
 
 class GradeJobResponse(BaseModel):

@@ -29,24 +29,55 @@ def _load_model() -> tuple[Any, Any]:
         return _model, _processor
 
     logger.info(f"Loading OCR model: {settings.ocr_model} …")
-    from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+    from transformers import (
+        Qwen2VLForConditionalGeneration,
+        AutoProcessor,
+        BitsAndBytesConfig,
+    )
     from qwen_vl_utils import process_vision_info  # noqa: F401 – side effect import
 
     device = settings.ocr_device
-    dtype = torch.float16 if device == "cuda" else torch.float32
 
     _processor = AutoProcessor.from_pretrained(
         settings.ocr_model,
         trust_remote_code=True,
     )
-    _model = Qwen2VLForConditionalGeneration.from_pretrained(
-        settings.ocr_model,
-        torch_dtype=dtype,
-        device_map=device if device == "cuda" else None,
-        trust_remote_code=True,
-    )
-    if device != "cuda":
-        _model = _model.to(device)
+
+    if device == "cuda":
+        # 4-bit quantization: cuts VRAM from ~14 GB → ~4 GB with minimal
+        # quality loss for transcription tasks. Requires bitsandbytes:
+        #   pip install bitsandbytes --break-system-packages
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_use_double_quant=True,   # extra 0.4 bits saved
+            bnb_4bit_quant_type="nf4",         # best quality for LLMs
+            bnb_4bit_compute_dtype=torch.float16,
+        )
+        logger.info("CUDA detected — loading with 4-bit quantization (~4 GB VRAM)")
+        _model = Qwen2VLForConditionalGeneration.from_pretrained(
+            settings.ocr_model,
+            quantization_config=bnb_config,
+            device_map="auto",
+            trust_remote_code=True,
+        )
+    else:
+        # CPU path: use the smaller 2B variant automatically to stay within
+        # typical RAM budgets. The 7B model will OOM on most laptops on CPU.
+        cpu_model = settings.ocr_model
+        if "7B" in cpu_model or "7b" in cpu_model:
+            cpu_model = cpu_model.replace("7B", "2B").replace("7b", "2b")
+            logger.warning(
+                f"CPU detected — switching to 2B model ({cpu_model}) to avoid "
+                f"OOM. Set ocr_device=cuda in .env to use the 7B model."
+            )
+        logger.info(f"Loading {cpu_model} in float32 on CPU …")
+        _model = Qwen2VLForConditionalGeneration.from_pretrained(
+            cpu_model,
+            torch_dtype=torch.float32,
+            device_map="cpu",
+            trust_remote_code=True,
+        )
+
     _model.eval()
     logger.info("OCR model ready.")
     return _model, _processor
@@ -57,11 +88,18 @@ def _load_model() -> tuple[Any, Any]:
 # ─────────────────────────────────────────────────────────────────
 
 _OCR_PROMPT = """\
-You are an expert at reading handwritten exam answers.
-Carefully transcribe ALL text written in this image exactly as written.
-Include every word, number, symbol, and equation.
-Do NOT interpret, correct, or add anything — just transcribe faithfully.
-If the image is blank or unreadable, reply with: [BLANK]
+You are a forensic transcription engine for handwritten exam answers.
+Your ONLY job is to copy every character exactly as it appears on the page.
+
+CRITICAL RULES — violating any of these is a transcription failure:
+1. Preserve ALL spelling mistakes exactly. If a student wrote "mitochodra",
+   you MUST output "mitochodra", NOT "mitochondria". Do NOT fix typos.
+2. Preserve ALL grammatical errors, crossed-out words, and abbreviations.
+3. Do NOT interpret, paraphrase, or add anything not visible on the page.
+4. Do NOT auto-complete partial words.
+5. If the image is blank or completely unreadable, reply with exactly: [BLANK]
+
+Your output must be a verbatim copy of what is written — nothing more.
 """
 
 
